@@ -1,0 +1,19 @@
+{
+  "name": "naukri-update",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "update-profiles": "playwright test --project=chromium",
+    "schedule": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-schedule.ps1"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.3"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.5"
+  }
+}

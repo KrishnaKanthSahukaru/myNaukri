@@ -1,0 +1,59 @@
+name: Naukri profile automation
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: naukri-profile-automation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Discover Playwright tests
+        run: npx playwright test --list --project=chromium
+
+  update-profiles:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Create local credentials file
+        env:
+          NAUKRI_CREDENTIALS_JSON: ${{ secrets.NAUKRI_CREDENTIALS_JSON }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const profiles = JSON.parse(process.env.NAUKRI_CREDENTIALS_JSON || 'null');
+          if (!Array.isArray(profiles) || profiles.length !== 2 || profiles.some((profile) => !profile.email || !profile.password)) {
+            throw new Error('Set the NAUKRI_CREDENTIALS_JSON repository secret to an array of two profile objects.');
+          }
+          fs.writeFileSync('credentials.json', JSON.stringify(profiles), { mode: 0o600 });
+          NODE
+      - name: Run profile updates
+        run: npm run update-profiles -- --retries=0
