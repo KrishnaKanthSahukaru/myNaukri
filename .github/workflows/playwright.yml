@@ -2,89 +2,88 @@ name: Naukri profile automation
 
 on:
   schedule:
-    # Broad interval so GitHub triggers it reliably
-    - cron: '*/15 * * * *'
+    - cron: '*/30 * * * *'
+
   workflow_dispatch:
+
   push:
     branches: [main, master]
 
+  pull_request:
+    branches: [main, master]
+
 permissions:
-  contents: write # Grants the runner permission to push timestamp files
+  contents: read
+
+concurrency:
+  group: naukri-profile-automation
+  cancel-in-progress: false
 
 jobs:
-  update-profiles:
+  validate:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch and Check Timestamp Cache
-        id: timer
-        run: |
-          # Configure Git identity for background tracking
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # Try to pull the background tracking branch using proper token authentication format
-          if git clone --branch automation-data https://x-access-token:${{ secrets.GITHUB_TOKEN }}@://github.com{{ github.repository }}.git data-repo 2>/dev/null; then
-            LAST_RUN=$(cat data-repo/last_run.txt 2>/dev/null || echo "0")
-          else
-            # Create the data tracking repository if it doesn't exist yet
-            mkdir data-repo
-            cd data-repo
-            git init
-            git checkout -b automation-data
-            LAST_RUN="0"
-            cd ..
-          fi
-          
-          CURRENT_TIME=$(date +%s)
-          TIME_DIFF=$((CURRENT_TIME - LAST_RUN))
-          
-          # 30 minutes = 1800 seconds (allow 1700 buffer for slight cron shift)
-          if [ $TIME_DIFF -lt 1700 ] && [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "30 minutes have not elapsed yet. Terminating run to save resources."
-            echo "run_job=false" >> $GITHUB_OUTPUT
-          else
-            echo "Time window cleared! Proceeding with Naukri update."
-            echo "run_job=true" >> $GITHUB_OUTPUT
-            
-            # Record current timestamp for next iteration
-            echo "$CURRENT_TIME" > data-repo/last_run.txt
-            cd data-repo
-            git add last_run.txt
-            git commit -m "update automation timestamp" --allow-empty
-            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@://github.com{{ github.repository }}.git automation-data --force
-          fi
-
-      - name: Setup Node.js
-        if: steps.timer.outputs.run_job == 'true'
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
-        if: steps.timer.outputs.run_job == 'true'
-        run: npm ci
+      - run: npm ci
+
+      - name: Discover Playwright tests
+        run: npx playwright test --list --project=chromium
+
+  update-profiles:
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
 
       - name: Install Chromium
-        if: steps.timer.outputs.run_job == 'true'
         run: npx playwright install --with-deps chromium
 
       - name: Create local credentials file
-        if: steps.timer.outputs.run_job == 'true'
         env:
           NAUKRI_CREDENTIALS_JSON: ${{ secrets.NAUKRI_CREDENTIALS_JSON }}
         run: |
           node <<'NODE'
           const fs = require('node:fs');
-          const profiles = JSON.parse(process.env.NAUKRI_CREDENTIALS_JSON || 'null');
-          if (!Array.isArray(profiles) || profiles.length !== 2 || profiles.some((profile) => !profile.email || !profile.password)) {
-            throw new Error('Set the NAUKRI_CREDENTIALS_JSON repository secret to an array of two profile objects.');
+
+          const profiles = JSON.parse(
+            process.env.NAUKRI_CREDENTIALS_JSON || 'null'
+          );
+
+          if (
+            !Array.isArray(profiles) ||
+            profiles.length !== 2 ||
+            profiles.some(
+              (profile) => !profile.email || !profile.password
+            )
+          ) {
+            throw new Error(
+              'Set the NAUKRI_CREDENTIALS_JSON repository secret to an array of two profile objects.'
+            );
           }
-          fs.writeFileSync('credentials.json', JSON.stringify(profiles), { mode: 0o600 });
+
+          fs.writeFileSync(
+            'credentials.json',
+            JSON.stringify(profiles),
+            { mode: 0o600 }
+          );
           NODE
 
       - name: Run profile updates
-        if: steps.timer.outputs.run_job == 'true'
         run: npm run update-profiles -- --retries=0
