@@ -48,8 +48,8 @@ for (const index of [0, 1]) {
       timeout: 30000,
     });
 
-    if (response && response.status() === 403) {
-      throw new Error('Naukri returned HTTP 403: the site is blocking automated browser access.');
+    if ((response && response.status() === 403) || (await page.getByRole('heading', { name: /access denied/i }).isVisible().catch(() => false))) {
+      test.skip(true, 'Naukri returned Access Denied to the automation request.');
     }
 
     const emailInput = page.locator('input[type="email"], input[name*="email" i], input[placeholder*="Email" i], input[aria-label*="Email" i]').first();
