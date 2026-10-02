@@ -1,51 +1,64 @@
 name: Naukri profile automation
 
 on:
-  repository_dispatch:
-    types: [trigger-next-loop]
+  schedule:
+    # We set a broad schedule to check every 15 minutes.
+    # Because it is a 15-min window, GitHub will reliably fire it.
+    - cron: '*/15 * * * *'
   workflow_dispatch:
   push:
     branches: [main, master]
-  pull_request:
-    branches: [main, master]
 
 permissions:
-  contents: read
-  actions: write # Required so the runner can trigger its own next workflow run
-
-concurrency:
-  group: naukri-profile-automation
-  cancel-in-progress: true # Ensures only one active loop runs if you manually push code
+  contents: write
 
 jobs:
-  validate:
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Discover Playwright tests
-        run: npx playwright test --list --project=chromium
-
   update-profiles:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
-    # Extend execution timeout to handle the sleep period comfortably
-    timeout-minutes: 45 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      
+      - name: Check Time Window
+        id: timer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Fetch the timestamp of when this ran successfully last time
+          LAST_RUN=$(gh api repos/${{ github.repository }}/actions/variables/LAST_AUTOMATION_TIME --template '{{.value}}' 2>/dev/null || echo "0")
+          CURRENT_TIME=$(date +%s)
+          
+          # Calculate how many seconds passed (30 minutes = 1800 seconds)
+          TIME_DIFF=$((CURRENT_TIME - LAST_RUN))
+          
+          if [ $TIME_DIFF -lt 1700 ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "30 minutes have not passed yet. Skipping execution to save minutes."
+            echo "run_job=false" >> $GITHUB_OUTPUT
+          else
+            echo "Time threshold met! Running automation."
+            echo "run_job=true" >> $GITHUB_OUTPUT
+            
+            # Update the variable in GitHub for the next loop
+            gh api --method PATCH repos/${{ github.repository }}/actions/variables/LAST_AUTOMATION_TIME -f value="$CURRENT_TIME" || \
+            gh api --method POST repos/${{ github.repository }}/actions/variables -f name="LAST_AUTOMATION_TIME" -f value="$CURRENT_TIME"
+          fi
+
+      - name: Setup Node.js
+        if: steps.timer.outputs.run_job == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+
+      - name: Install dependencies
+        if: steps.timer.outputs.run_job == 'true'
+        run: npm ci
+
       - name: Install Chromium
+        if: steps.timer.outputs.run_job == 'true'
         run: npx playwright install --with-deps chromium
+
       - name: Create local credentials file
+        if: steps.timer.outputs.run_job == 'true'
         env:
           NAUKRI_CREDENTIALS_JSON: ${{ secrets.NAUKRI_CREDENTIALS_JSON }}
         run: |
@@ -57,22 +70,7 @@ jobs:
           }
           fs.writeFileSync('credentials.json', JSON.stringify(profiles), { mode: 0o600 });
           NODE
-          
-      - name: Run profile updates
-        run: npm run update-profiles -- --retries=0
 
-      - name: Delay and Dispatch Next Chain Link
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Profile update complete. Waiting 30 minutes inside GitHub Cloud..."
-          sleep 1800
-          
-          echo "Dispatching the next execution link to the chain..."
-          curl -L \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://github.com{{ github.repository }}/dispatches \
-            -d '{"event_type": "trigger-next-loop"}'
+      - name: Run profile updates
+        if: steps.timer.outputs.run_job == 'true'
+        run: npm run update-profiles -- --retries=0
