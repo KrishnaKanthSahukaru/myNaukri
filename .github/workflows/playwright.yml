@@ -2,44 +2,58 @@ name: Naukri profile automation
 
 on:
   schedule:
-    # We set a broad schedule to check every 15 minutes.
-    # Because it is a 15-min window, GitHub will reliably fire it.
+    # Broad interval so GitHub triggers it reliably
     - cron: '*/15 * * * *'
   workflow_dispatch:
   push:
     branches: [main, master]
 
 permissions:
-  contents: write
+  contents: write # Grants the runner permission to push timestamp files
 
 jobs:
   update-profiles:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Check Time Window
+
+      - name: Fetch and Check Timestamp Cache
         id: timer
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Fetch the timestamp of when this ran successfully last time
-          LAST_RUN=$(gh api repos/${{ github.repository }}/actions/variables/LAST_AUTOMATION_TIME --template '{{.value}}' 2>/dev/null || echo "0")
-          CURRENT_TIME=$(date +%s)
+          # Configure Git identity for background tracking
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          # Calculate how many seconds passed (30 minutes = 1800 seconds)
+          # Try to pull the background tracking branch
+          if git clone --branch automation-data https://x-token-auth:${{ secrets.GITHUB_TOKEN }}@://github.com{{ github.repository }}.git data-repo 2>/dev/null; then
+            LAST_RUN=$(cat data-repo/last_run.txt 2>/dev/null || echo "0")
+          else
+            # Create the data tracking repository if it doesn't exist yet
+            mkdir data-repo
+            cd data-repo
+            git init
+            git checkout -b automation-data
+            LAST_RUN="0"
+            cd ..
+          fi
+          
+          CURRENT_TIME=$(date +%s)
           TIME_DIFF=$((CURRENT_TIME - LAST_RUN))
           
+          # 30 minutes = 1800 seconds (allow 1700 buffer for slight cron shift)
           if [ $TIME_DIFF -lt 1700 ] && [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "30 minutes have not passed yet. Skipping execution to save minutes."
+            echo "30 minutes have not elapsed yet. Terminating run to save resources."
             echo "run_job=false" >> $GITHUB_OUTPUT
           else
-            echo "Time threshold met! Running automation."
+            echo "Time window cleared! Proceeding with Naukri update."
             echo "run_job=true" >> $GITHUB_OUTPUT
             
-            # Update the variable in GitHub for the next loop
-            gh api --method PATCH repos/${{ github.repository }}/actions/variables/LAST_AUTOMATION_TIME -f value="$CURRENT_TIME" || \
-            gh api --method POST repos/${{ github.repository }}/actions/variables -f name="LAST_AUTOMATION_TIME" -f value="$CURRENT_TIME"
+            # Record current timestamp for next iteration
+            echo "$CURRENT_TIME" > data-repo/last_run.txt
+            cd data-repo
+            git add last_run.txt
+            git commit -m "update automation timestamp" --allow-empty
+            git push https://x-token-auth:${{ secrets.GITHUB_TOKEN }}@://github.com{{ github.repository }}.git automation-data --force
           fi
 
       - name: Setup Node.js
