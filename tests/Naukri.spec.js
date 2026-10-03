@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const credentialsPath = path.resolve(process.env.NAUKRI_CREDENTIALS_FILE || 'credentials.json');
+const resumeHeadline = 'Immediate Joiner, Results-driven QA Lead with expertise in API automation, UI Automation (Playwright with JavaScript) and Manual testing with experience in handling multiple QA team members';
 
 function getProfile(index) {
   if (!fs.existsSync(credentialsPath)) {
@@ -43,46 +44,39 @@ for (const index of [0, 1]) {
 
     const page = await context.newPage();
 
-    const response = await page.goto('https://www.naukri.com/nlogin/login?URL=https://www.naukri.com/mnjuser/homepage', {
+    const response = await page.goto('https://www.naukri.com/', {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
 
     if ((response && response.status() === 403) || (await page.getByRole('heading', { name: /access denied/i }).isVisible().catch(() => false))) {
-      test.skip(true, 'Naukri returned Access Denied to the automation request.');
+      throw new Error('Naukri returned Access Denied to the automation request.');
     }
 
-    const emailInput = page.locator('input[type="email"], input[name*="email" i], input[placeholder*="Email" i], input[aria-label*="Email" i]').first();
-    const passwordInput = page.locator('input[type="password"], input[name*="password" i], input[placeholder*="Password" i], input[aria-label*="Password" i]').first();
-
-    await expect(emailInput).toBeVisible({ timeout: 30000 });
-    await emailInput.fill(profile.email);
-
-    await expect(passwordInput).toBeVisible({ timeout: 30000 });
+    await page.getByRole('link', { name: 'Login', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Email ID / Username' }).fill(profile.email);
+    const passwordInput = page.getByRole('textbox', { name: 'Password' });
     await passwordInput.fill(profile.password);
+    await passwordInput.press('Enter');
 
-    const loginButton = page.locator('button:has-text("Login"), input[type="submit"][value*="Login" i]').first();
-    await expect(loginButton).toBeVisible({ timeout: 30000 });
-    await loginButton.click();
-
-    const profileMenuButton = page.locator('button:has-text("Open profile menu"), button[aria-label*="profile" i]').first();
-    await expect(profileMenuButton).toBeVisible({ timeout: 60000 });
-    await profileMenuButton.click();
-
-    const profileLink = page.locator('a:has-text("View & Update Profile"), a:has-text("View and Update Profile")').first();
-    await expect(profileLink).toBeVisible({ timeout: 30000 });
+    const profileLink = page.getByRole('link', { name: 'View profile', exact: true });
+    await expect(profileLink).toBeVisible({ timeout: 60000 });
     await profileLink.click();
 
-    await page.waitForLoadState('networkidle');
+    await page.getByRole('button', { name: 'Resume headline', exact: true }).click();
+    await page.getByRole('button', { name: 'Edit resume headline' }).click();
 
-    const editButton = page.locator('#lazyResumeHead, [data-testid="resume-head"], [id*="resume"]').getByText(/editOneTheme|Edit/i).first();
-    await expect(editButton).toBeVisible({ timeout: 60000 });
-    await editButton.click();
+    const headlineInput = page.getByRole('textbox', { name: 'Resume headline' });
+    await expect(headlineInput).toBeVisible({ timeout: 30000 });
+    const currentHeadline = (await headlineInput.inputValue()).trim();
+    const nextHeadline = currentHeadline === resumeHeadline
+      ? `${resumeHeadline}.`
+      : resumeHeadline;
+    await headlineInput.fill(nextHeadline);
 
-    const saveButton = page.locator('button:has-text("Save")').last();
-    await expect(saveButton).toBeVisible({ timeout: 30000 });
-    await saveButton.click();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
 
+    await expect(page.getByText(nextHeadline, { exact: true })).toBeVisible({ timeout: 30000 });
     await context.close();
   });
 }
