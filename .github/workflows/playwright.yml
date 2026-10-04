@@ -2,12 +2,8 @@ name: Naukri profile automation
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '7,37 * * * *'
   workflow_dispatch:
-  push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
 
 permissions:
   contents: read
@@ -17,43 +13,143 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate:
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Discover Playwright tests
-        run: npx playwright test --list --project=chromium
-
   update-profiles:
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 10
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
+
+      - name: Show GitHub runner public IP
+        shell: pwsh
+        run: |
+          Write-Host "========================================"
+          Write-Host "GitHub Runner Public IP"
+          Write-Host "========================================"
+
+          try {
+            $ip = Invoke-RestMethod https://api.ipify.org
+            Write-Host "Public IP: $ip"
+          }
+          catch {
+            Write-Host "Unable to determine public IP"
+            Write-Host $_
+          }
+
+          Write-Host "========================================"
+
+      - name: Install Playwright
+        run: npm install --no-save --no-package-lock @playwright/test@1.63.0
+
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
-      - name: Create local credentials file
+        run: npx playwright install chromium
+
+      - name: Update profile headlines
         env:
           NAUKRI_CREDENTIALS_JSON: ${{ secrets.NAUKRI_CREDENTIALS_JSON }}
+        shell: pwsh
         run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const profiles = JSON.parse(process.env.NAUKRI_CREDENTIALS_JSON || 'null');
-          if (!Array.isArray(profiles) || profiles.length !== 2 || profiles.some((profile) => !profile.email || !profile.password)) {
-            throw new Error('Set the NAUKRI_CREDENTIALS_JSON repository secret to an array of two profile objects.');
+          @'
+          const { chromium } = require('@playwright/test');
+          const { NaukriProfilePage } = require('./tests/pages/NaukriProfilePage');
+
+          async function main() {
+            console.log('========================================');
+            console.log('Starting Naukri Profile Automation');
+            console.log('========================================');
+
+            const credentialsJson =
+              process.env.NAUKRI_CREDENTIALS_JSON || '';
+
+            if (!credentialsJson.trim()) {
+              throw new Error(
+                'NAUKRI_CREDENTIALS_JSON GitHub secret is empty or missing.'
+              );
+            }
+
+            let profiles;
+
+            try {
+              profiles = JSON.parse(credentialsJson);
+            } catch (error) {
+              throw new Error(
+                'NAUKRI_CREDENTIALS_JSON is not valid JSON.'
+              );
+            }
+
+            if (
+              !Array.isArray(profiles) ||
+              profiles.length !== 2 ||
+              profiles.some(profile =>
+                !profile ||
+                typeof profile.email !== 'string' ||
+                !profile.email.trim() ||
+                typeof profile.password !== 'string' ||
+                !profile.password.trim()
+              )
+            ) {
+              throw new Error(
+                'Set NAUKRI_CREDENTIALS_JSON to an array of two profiles with email and password.'
+              );
+            }
+
+            console.log(`Profiles configured: ${profiles.length}`);
+
+            const browser = await chromium.launch({
+              headless: true,
+            });
+
+            try {
+              for (let i = 0; i < profiles.length; i++) {
+                const profile = profiles[i];
+
+                console.log('');
+                console.log('========================================');
+                console.log(`Processing profile ${i + 1} of ${profiles.length}`);
+                console.log('========================================');
+
+                const page = await browser.newPage();
+
+                try {
+                  await new NaukriProfilePage(page).updateHeadline(profile);
+
+                  console.log(
+                    `Profile ${i + 1} completed successfully.`
+                  );
+                } finally {
+                  await page.close();
+                }
+              }
+
+              console.log('');
+              console.log('========================================');
+              console.log('All profiles completed successfully');
+              console.log('========================================');
+            } finally {
+              await browser.close();
+            }
           }
-          fs.writeFileSync('credentials.json', JSON.stringify(profiles), { mode: 0o600 });
-          NODE
-      - name: Run profile updates
-        run: npm run update-profiles -- --retries=0
+
+          main().catch(error => {
+            console.error('');
+            console.error('========================================');
+            console.error('Naukri automation FAILED');
+            console.error('========================================');
+            console.error(error);
+            process.exitCode = 1;
+          });
+          '@ | node
+
+      - name: Upload diagnostic screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naukri-diagnostics
+          path: naukri-login-page.png
+          if-no-files-found: ignore
