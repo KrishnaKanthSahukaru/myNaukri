@@ -9,12 +9,21 @@ $action = New-ScheduledTaskAction `
     -Execute $env:ComSpec `
     -Argument $arguments `
     -WorkingDirectory $workspace
-$trigger = New-ScheduledTaskTrigger `
-    -Daily `
-    -At '08:00AM' `
-    -RepetitionInterval (New-TimeSpan -Minutes 30) `
-    -RepetitionDuration (New-TimeSpan -Hours 14)
+$trigger = New-ScheduledTaskTrigger -Daily -At '08:00AM'
+$repetitionClass = Get-CimClass `
+    -Namespace 'root/Microsoft/Windows/TaskScheduler' `
+    -ClassName 'MSFT_TaskRepetitionPattern'
+$trigger.Repetition = New-CimInstance `
+    -CimClass $repetitionClass `
+    -ClientOnly `
+    -Property @{
+        Interval = 'PT30M'
+        Duration = 'PT14H'
+        StopAtDurationEnd = $false
+    }
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew
+$settings.StartWhenAvailable = $false
+$settings.WakeToRun = $false
 $principal = New-ScheduledTaskPrincipal `
     -UserId "$env:USERDOMAIN\$env:USERNAME" `
     -LogonType Interactive `

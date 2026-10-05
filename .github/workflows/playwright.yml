@@ -32,168 +32,31 @@ jobs:
           Write-Host "========================================"
           Write-Host "GitHub Runner Public IP"
           Write-Host "========================================"
-
           try {
-            \$ip = Invoke-RestMethod https://api.ipify.org
-            Write-Host "Public IP: \$ip"
+            $ip = Invoke-RestMethod https://ipify.org
+            Write-Host "Public IP: $ip"
           }
           catch {
             Write-Host "Unable to determine public IP"
-            Write-Host \$_
+            Write-Host $_
           }
-
           Write-Host "========================================"
 
-      - name: Install Playwright
-        run: npm install --no-save --no-package-lock @playwright/test@1.63.0
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Install Chromium
+      - name: Install Playwright Browsers
         run: npx playwright install chromium
 
-      - name: Update profile headlines
+      - name: Run Naukri Profile Automation
         env:
-          NAUKRI_CREDENTIALS_JSON: \${{ secrets.NAUKRI_CREDENTIALS_JSON }}
-        shell: pwsh
-        run: |
-          @'
-          const { chromium } = require('@playwright/test');
-          const { NaukriProfilePage } = require('./tests/pages/NaukriProfilePage');
+          NAUKRI_CREDENTIALS_JSON: ${{ secrets.NAUKRI_CREDENTIALS_JSON }}
+        run: npx playwright test tests/Naukri.spec.js
 
-          async function main() {
-            console.log('========================================');
-            console.log('Starting Naukri Profile Automation');
-            console.log('========================================');
-
-            const credentialsJson =
-              process.env.NAUKRI_CREDENTIALS_JSON || '';
-
-            if (!credentialsJson.trim()) {
-              throw new Error(
-                'NAUKRI_CREDENTIALS_JSON GitHub secret is empty or missing.'
-              );
-            }
-
-            let profiles;
-
-            try {
-              profiles = JSON.parse(credentialsJson);
-            } catch (error) {
-              throw new Error(
-                'NAUKRI_CREDENTIALS_JSON is not valid JSON.'
-              );
-            }
-
-            if (
-              !Array.isArray(profiles) ||
-              profiles.length !== 2 ||
-              profiles.some(profile =>
-                !profile ||
-                typeof profile.email !== 'string' ||
-                !profile.email.trim() ||
-                typeof profile.password !== 'string' ||
-                !profile.password.trim()
-              )
-            ) {
-              throw new Error(
-                'Set NAUKRI_CREDENTIALS_JSON to an array of two profiles with email and password.'
-              );
-            }
-
-            console.log(`Profiles configured: ${profiles.length}`);
-
-            const browser = await chromium.launch({
-              headless: true,
-              args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-blink-features=AutomationControlled'
-              ],
-              ignoreDefaultArgs: ['--enable-automation']
-            });
-
-            try {
-              for (let i = 0; i < profiles.length; i++) {
-                const profile = profiles[i];
-
-                console.log('');
-                console.log('========================================');
-                console.log(`Processing profile ${i + 1} of ${profiles.length}`);
-                console.log('========================================');
-
-                // Create a localized stealth context for each profile session
-                const context = await browser.newContext({
-                  viewport: { width: 1440, height: 900 },
-                  userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-                  locale: 'en-US',
-                  timezoneId: 'Asia/Kolkata',
-                  permissions: ['geolocation'],
-                  extraHTTPHeaders: {
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Upgrade-Insecure-Requests': '1'
-                  }
-                });
-
-                // Strip the internal automation navigator attributes inside the runner
-                await context.addInitScript(() => {
-                  Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
-                  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
-                  Object.defineProperty(navigator, 'platform', { get: () => 'Win32', configurable: true });
-                  window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
-                });
-
-                const page = await context.newPage();
-
-                try {
-                  // Navigate with natural human delays
-                  await page.waitForTimeout(Math.floor(Math.random() * 1500) + 1000);
-                  
-                  // Track early navigation response status code
-                  page.on('response', async (response) => {
-                    if (response.url().includes('nlogin/login') && response.status() === 403) {
-                      console.error('CRITICAL: Cloudflare triggered a 403 Forbidden on this IP range.');
-                      await page.screenshot({ path: 'naukri-login-page.png', fullPage: true });
-                    }
-                  });
-
-                  await new NaukriProfilePage(page).updateHeadline(profile);
-
-                  console.log(
-                    `Profile ${i + 1} completed successfully.`
-                  );
-                } catch (err) {
-                  // Fallback capture for any internal block or timeout exception
-                  await page.screenshot({ path: 'naukri-login-page.png', fullPage: true });
-                  throw err;
-                } finally {
-                  await context.close();
-                }
-              }
-
-              console.log('');
-              console.log('========================================');
-              console.log('All profiles completed successfully');
-              console.log('========================================');
-            } finally {
-              await browser.close();
-            }
-          }
-
-          main().catch(error => {
-            console.error('');
-            console.error('========================================');
-            console.error('Naukri automation FAILED');
-            console.error('========================================');
-            console.error(error);
-            process.exitCode = 1;
-          });
-          '@ | node
-
-      - name: Upload diagnostic screenshot
+      - name: Upload Diagnostic HTML Report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: naukri-diagnostics
-          path: naukri-login-page.png
+          name: playwright-report
+          path: playwright-report/
           if-no-files-found: ignore

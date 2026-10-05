@@ -3,86 +3,73 @@ const { test, expect } = require('@playwright/test');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const credentialsPath = path.resolve(process.env.NAUKRI_CREDENTIALS_FILE || 'credentials.json');
+require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
 
-function getProfile(index) {
-  if (!fs.existsSync(credentialsPath)) {
-    throw new Error(`Missing ${credentialsPath}. Provide credentials.json locally or set the CI secret.`);
-  }
+const credentialsPath = path.resolve(
+  __dirname,
+  '..',
+  process.env.NAUKRI_CREDENTIALS_FILE || 'credentials.json'
+);
 
-  const profiles = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
-  if (!Array.isArray(profiles) || profiles.length !== 2) {
-    throw new Error('credentials.json must contain exactly two profile objects.');
-  }
-
-  const profile = profiles[index];
-  if (!profile || typeof profile.email !== 'string' || typeof profile.password !== 'string') {
-    throw new Error(`Profile ${index + 1} needs an email and password in credentials.json.`);
-  }
-
-  return profile;
+if (!fs.existsSync(credentialsPath)) {
+  throw new Error(`Credentials file not found: ${credentialsPath}`);
 }
 
-for (const index of [0, 1]) {
-  test(`update Naukri profile ${index + 1}`, async ({ browser }) => {
-    const profile = getProfile(index);
-    const context = await browser.newContext({
-      viewport: { width: 1440, height: 900 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-      locale: 'en-US',
-      timezoneId: 'Asia/Kolkata',
-      permissions: ['geolocation'],
-    });
-
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
-      Object.defineProperty(navigator, 'platform', { get: () => 'Win32', configurable: true });
-      Object.defineProperty(window, 'chrome', { value: { runtime: {} }, configurable: true });
-    });
-
-    const page = await context.newPage();
-
-    const response = await page.goto('https://www.naukri.com/nlogin/login?URL=https://www.naukri.com/mnjuser/homepage', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    });
-
-    if ((response && response.status() === 403) || (await page.getByRole('heading', { name: /access denied/i }).isVisible().catch(() => false))) {
-      test.skip(true, 'Naukri returned Access Denied to the automation request.');
-    }
-
-    const emailInput = page.locator('input[type="email"], input[name*="email" i], input[placeholder*="Email" i], input[aria-label*="Email" i]').first();
-    const passwordInput = page.locator('input[type="password"], input[name*="password" i], input[placeholder*="Password" i], input[aria-label*="Password" i]').first();
-
-    await expect(emailInput).toBeVisible({ timeout: 30000 });
-    await emailInput.fill(profile.email);
-
-    await expect(passwordInput).toBeVisible({ timeout: 30000 });
-    await passwordInput.fill(profile.password);
-
-    const loginButton = page.locator('button:has-text("Login"), input[type="submit"][value*="Login" i]').first();
-    await expect(loginButton).toBeVisible({ timeout: 30000 });
-    await loginButton.click();
-
-    const profileMenuButton = page.locator('button:has-text("Open profile menu"), button[aria-label*="profile" i]').first();
-    await expect(profileMenuButton).toBeVisible({ timeout: 60000 });
-    await profileMenuButton.click();
-
-    const profileLink = page.locator('a:has-text("View & Update Profile"), a:has-text("View and Update Profile")').first();
-    await expect(profileLink).toBeVisible({ timeout: 30000 });
-    await profileLink.click();
-
-    await page.waitForLoadState('networkidle');
-
-    const editButton = page.locator('#lazyResumeHead, [data-testid="resume-head"], [id*="resume"]').getByText(/editOneTheme|Edit/i).first();
-    await expect(editButton).toBeVisible({ timeout: 60000 });
-    await editButton.click();
-
-    const saveButton = page.locator('button:has-text("Save")').last();
-    await expect(saveButton).toBeVisible({ timeout: 30000 });
-    await saveButton.click();
-
-    await context.close();
-  });
+let profiles;
+try {
+  profiles = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
+} catch {
+  throw new Error(`Credentials file is not valid JSON: ${credentialsPath}`);
 }
+
+if (!Array.isArray(profiles) || profiles.length !== 2) {
+  throw new Error('credentials.json must contain exactly two profile objects.');
+}
+
+for (const [index, profile] of profiles.entries()) {
+  if (
+    !profile ||
+    typeof profile.email !== 'string' ||
+    !profile.email.trim() ||
+    typeof profile.password !== 'string' ||
+    !profile.password
+  ) {
+    throw new Error(`Profile ${index + 1} needs a non-empty email and password.`);
+  }
+}
+
+const resumeHeadline =
+  'Immediate Joiner, Results-driven QA Lead with expertise in API automation, UI Automation (Playwright with JavaScript) and Manual testing with experience in handling multiple QA team members';
+
+async function updateProfile(page, profile) {
+  await page.goto(
+    'https://www.naukri.com/nlogin/login?URL=https://www.naukri.com/mnjuser/homepage'
+  );
+  await page.getByRole('link', { name: 'Login', exact: true }).click();
+
+  await page.getByRole('textbox', { name: 'Enter Email ID / Username' }).fill(profile.email);
+  await page.getByRole('textbox', { name: 'Enter Password' }).fill(profile.password);
+  await page.getByRole('button', { name: 'Login', exact: true }).click();
+
+  const viewProfileLink = page.getByRole('link', { name: 'View profile' });
+  await expect(viewProfileLink).toBeVisible({ timeout: 60000 });
+  await viewProfileLink.click();
+
+  await page.getByRole('button', { name: 'Resume headline', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit resume headline' }).click();
+  const headlineTextbox = page.getByRole('textbox', { name: 'Resume headline' });
+  await headlineTextbox.fill(resumeHeadline);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  await page.goto('https://www.naukri.com/mnjuser/profile');
+  await page.getByRole('button', { name: 'Open profile menu' }).click();
+  await page.getByRole('button', { name: 'Logout', exact: true }).click();
+}
+
+test('update Naukri profile 1', async ({ page }) => {
+  await updateProfile(page, profiles[0]);
+});
+
+test('update Naukri profile 2', async ({ page }) => {
+  await updateProfile(page, profiles[1]);
+});
